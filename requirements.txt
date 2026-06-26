@@ -1,0 +1,30 @@
+# ML Test — Bus Segment Travel-Time Prediction
+# Developed on Python 3.12.12 (miniforge). Requires Python 3.10+.
+#
+# SYSTEM DEPENDENCY (macOS / Apple Silicon): OpenMP runtime for XGBoost & LightGBM
+#   brew install libomp
+# Linux: libgomp is usually preinstalled. Windows: see XGBoost install docs.
+
+# --- core data / numerics ---
+pandas==2.3.3
+numpy==2.2.6
+pyarrow==24.0.0          # parquet IO engine
+scipy==1.16.3
+
+# --- ML ---
+scikit-learn==1.7.2
+xgboost==3.3.0
+lightgbm==4.6.0
+torch==2.9.0             # LSTM (PyTorch). TF 2.16 / keras 3 crash on NumPy 2.x (ml_dtypes),
+#                          so the sequence model uses PyTorch instead.
+
+# --- visualization ---
+matplotlib==3.10.7
+seaborn==0.13.2
+
+# --- notebooks (hybrid: src/*.py logic + thin .ipynb narrative) ---
+notebook==7.6.0
+nbconvert==7.16.6
+nbformat==5.10.4
+jupytext==1.19.4
+ipykernel==7.1.0

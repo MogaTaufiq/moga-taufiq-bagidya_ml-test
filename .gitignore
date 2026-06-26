@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.venv/
+venv/
+
+# AI Agent Specific Documents
+CLAUDE.md
+DATA_FINDINGS.md
+DECISIONS.md
+METHODOLOGY.md
+TASK_BRIEF.md
+README_OUTLINE.md

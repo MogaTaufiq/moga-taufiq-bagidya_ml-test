@@ -1,0 +1,6 @@
+Model,MAE_s,RMSE_s,MAPE_seg_%,LoopMAE_s,n_loops,train_s
+XGBoost (MAE-log),38.11,113.89,30.36,328.78,2325,13.5
+XGBoost (Huber-log),38.74,115.25,29.66,333.95,2325,1.9
+LightGBM (MSE-log),38.89,115.58,28.86,340.12,2325,6.8
+XGBoost (MSE-log),39.1,116.68,28.91,344.42,2325,3.7
+"Baseline (seg,hour mean)",50.79,125.29,46.12,510.34,2325,

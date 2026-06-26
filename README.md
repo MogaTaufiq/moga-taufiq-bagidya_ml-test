@@ -1,0 +1,169 @@
+# Prediksi Waktu Tempuh Segmen Bus BRT
+**Kandidat:** Moga Taufiq Bagidya  
+**Peran:** AI/ML Engineer  
+
+Proyek ini bertujuan untuk memprediksi waktu tempuh (*travel time*) bus kota per segmen koridor BRT (antar-halte berurutan) menggunakan data tracking GPS historis. Melalui pembersihan data yang ketat, mitigasi kebocoran data (*target leakage*), dan rekayasa fitur (*feature engineering*), model terpilih **XGBoost (MAE-log)** berhasil mencapai nilai **Loop MAE sebesar 328,8 detik** pada data uji (7 hari terakhir), yang menunjukkan peningkatan akurasi sebesar **-35,6% di bawah rata-rata historis (*baseline*)** dengan latensi inferensi yang sangat rendah, yaitu **0,85 ms per putaran**.
+
+---
+
+## 1. Ringkasan Eksekutif
+Tugas ini diselesaikan dengan memformulasikan prediksi waktu tempuh segmen bus sebagai masalah regresi tabular tingkat segmen. Berdasarkan analisis eksplorasi data, ditemukan bahwa fitur bawaan `average_time_sec` merupakan *target leakage* karena rasio aktual terhadap rata-rata ter-cap secara tidak wajar pada rentang $[0, 2]$. Di samping itu, unit putaran (*loop*) bus yang sahih diidentifikasi sebagai `no_do`, bukan `trip_id`. 
+
+Model final berbasis **XGBoost** yang menggunakan target transformasi logaritmik berhasil mengalahkan model dasar rata-rata historis sebesar 35,6% pada metrik bisnis utama (*Loop MAE*). Eksperimen terhadap model sekuensial (LSTM) dan metode gabungan (*ensemble*) tidak menunjukkan peningkatan performa yang signifikan, sehingga model tunggal XGBoost dipilih untuk diimplementasikan di lingkungan produksi karena keunggulannya dalam kesederhanaan, latensi, dan pemeliharaan.
+
+---
+
+## 2. Reproduksibilitas (Cara Menjalankan)
+
+### Persyaratan Lingkungan
+* **Python**: Versi 3.10+ (dikembangkan menggunakan Python 3.12.12)
+* **Ketergantungan Sistem (khusus macOS/Apple Silicon)**: Diperlukan runtime OpenMP untuk eksekusi XGBoost dan LightGBM.
+  ```bash
+  brew install libomp
+  ```
+
+### Panduan Instalasi
+1. Buat dan aktifkan lingkungan virtual (opsional namun disarankan):
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Untuk Linux/macOS
+   # .venv\Scripts\activate   # Untuk Windows
+   ```
+2. Instal pustaka yang diperlukan:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Urutan Eksekusi Notebook
+Seluruh proses eksperimen dan pemodelan disusun secara terstruktur di dalam direktori `notebooks/`. Setiap notebook dilengkapi dengan plot visual yang telah ter-render. Anda dapat menjalankannya kembali secara berurutan untuk mereproduksi hasil:
+```
+notebooks/01_eda.ipynb  →  02_feature_engineering.ipynb  →  03_modeling.ipynb  →  04_evaluation.ipynb
+```
+* **Nilai Seed**: Seluruh pustaka (numpy, scikit-learn, split, XGBoost, PyTorch) dikunci pada `seed = 42` untuk menjamin reproduksibilitas hasil.
+* **Format Notebook**: Kode logika utama ditulis di dalam direktori `src/` agar mudah diuji dan di-*import*. Setiap notebook memiliki salinan file `.py` yang dikelola menggunakan `jupytext` untuk memudahkan pelacakan perubahan (*diff*).
+
+---
+
+## 3. Struktur Repositori
+
+```
+├── CLAUDE.md              # Panduan instruksi agen AI (Claude Code)
+├── TASK_BRIEF.md          # Spesifikasi tugas teknikal awal
+├── DATA_FINDINGS.md       # Catatan eksplorasi data & verifikasi kebocoran data
+├── METHODOLOGY.md         # Dokumentasi alur kerja metodologi pemodelan
+├── DECISIONS.md           # Log keputusan teknis terperinci (D0 - D11)
+├── README_OUTLINE.md      # Template struktur README awal
+├── requirements.txt       # Daftar ketergantungan library Python
+├── README.md              # Berkas ini (panduan utama proyek)
+├── WRITEUP.md             # Laporan analitis ringkas (maksimal 2 halaman)
+├── data/
+│   └── AI_Engineer_dataset.parquet   # Dataset tracking GPS BRT mentah
+├── notebooks/
+│   ├── 01_eda.ipynb                  # Eksplorasi data awal & deteksi leakage
+│   ├── 02_feature_engineering.ipynb   # Pembersihan & pembuatan data siap latih
+│   ├── 03_modeling.ipynb             # Pelatihan & perbandingan model
+│   └── 04_evaluation.ipynb           # Evaluasi performa akhir & analisis error
+├── src/
+│   ├── __init__.py
+│   ├── data.py            # Modul pemuatan, pembersihan, dan pemisahan data
+│   ├── features.py        # Modul rekayasa fitur (leakage-free)
+│   ├── metrics.py         # Modul metrik performa (MAE, RMSE, MAPE, Loop MAE)
+│   └── models.py          # Modul latih model, evaluasi, dan model LSTM
+└── outputs/               # Hasil keluaran model, plot, dan dataset siap latih
+```
+
+---
+
+## 4. Temuan Data Kunci
+* **Unit Putaran Fisik Bus**: Kolom `no_do` bertindak sebagai representasi satu putaran bus (*loop*) yang valid (terdapat 17.857 putaran unik dengan median 19 segmen dan urutan halte `stop_sequence` yang rapi). Sebaliknya, `trip_id` hanya menandakan varian rute (13 nilai unik).
+* **Kebocoran Data Target**: Kolom bawaan `average_time_sec` terbukti memiliki kebocoran informasi masa depan (*target leakage*) karena distribusinya dibatasi secara artifisial. Kolom ini dihapus sepenuhnya dari fitur model.
+* **Kausalitas Waktu**: Nilai target waktu tempuh segmen diperoleh dari selisih `arrival_time` dengan `from_arrival_time_str`. Oleh karena itu, seluruh fitur waktu model hanya dihitung dari waktu keberangkatan (*departure time*) untuk mencegah bias prediksi.
+* **Karakteristik Data**: Ditemukan tingkat kemiringan (*skewness*) ekstrem (58,33), keberadaan celah (*gap*) pada 47,4% putaran bus, serta tingkat kelangkaan (*sparsity*) yang sangat ringan (3,3% dari kombinasi segmen-jam memiliki sampel kurang dari 30).
+
+---
+
+## 5. Asumsi & Batasan Threshold yang Digunakan
+
+> [!IMPORTANT]
+> Seluruh batasan (*threshold*) di bawah ini ditetapkan berdasarkan logika domain operasional transportasi BRT untuk memastikan model dapat diterapkan pada kondisi nyata di lapangan.
+
+| Item | Nilai Batasan | Alasan Operasional & Domain |
+|---|---|---|
+| **Outlier Waktu Tempuh** | Drop jika $> 3.600$ detik (1 jam) | Nilai persentil ke-99 berada pada 32 menit (plausibel untuk macet total Jakarta), namun melonjak hingga 6,6 jam pada persentil ke-99,5. Angka di atas 1 jam diasumsikan sebagai bus mogok/parkir atau kesalahan sensor GPS. |
+| **Identifikasi Celah (*Gap*)** | `stop_sequence.diff() > 1` dalam `no_do` | Menandai bus yang melewatkan halte akibat kegagalan tangkapan GPS atau sensor. Kolom ditandai sebagai `is_gap_suspected = True`. |
+| **Kebijakan Drop Celah** | Spesifik berdasarkan model | Pada model tabular (XGBoost), baris ber-gap tetap dipertahankan agar tidak membuang 42% data latih secara sia-sia. Pada LSTM dan evaluasi *Loop MAE*, putaran ber-gap dibuang untuk menjaga konsistensi urutan sekuensial. |
+| **Pemisahan Data (*Split*)** | *Time-based loop-aware*, batas cut: `2026-02-22` | Data tanggal 1–21 Februari digunakan sebagai data latih, dan 22–28 Februari sebagai data uji (7 hari terakhir). Pemisahan berbasis *loop-aware* menjamin tidak ada putaran bus (*no_do*) yang terpecah di antara dua set data. |
+| **Transformasi Target** | `log1p` pada target (dikembalikan via `expm1`) | Mengatasi *skewness* ekstrem dan memfokuskan model pada optimasi kesalahan relatif (*relative error*) di ruang asli detik. |
+| **Mitigasi Sparsity** | *Bayesian smoothing* ($m = 20$) + *hierarchical fallback* | Mencegah *overfitting* pada kombinasi segmen-jam yang memiliki data observasi sangat minim dengan menariknya ke arah rata-rata global secara aman. |
+| **MAPE Segmen Pendek** | Abaikan segmen dengan aktual $< 5$ detik | Menghindari pembagian dengan nilai mendekati nol yang dapat menyebabkan nilai metrik MAPE meledak secara artifisial. |
+
+---
+
+## 6. Rekayasa Fitur (*Feature Engineering*)
+Model akhir dilatih menggunakan 15 fitur terpilih. Tujuh fitur utama yang terbukti memberikan kontribusi terbesar meliputi:
+1. **`rolling_mean_segment_5`**: Rata-rata bergerak dari 5 observasi terakhir pada segmen yang sama (di-*shift* 1 langkah agar *leakage-free*).
+2. **`baseline_segment_hour`**: Rata-rata kumulatif waktu tempuh per segmen-jam (*expanding mean*, di-*shift*). Berfungsi sebagai pengganti fitur `average_time_sec` yang bersih dan bebas kebocoran data.
+3. **`hour_sin` & `hour_cos`**: Representasi siklis waktu jam. Menghubungkan kedekatan fisis antara jam 23:59 dan jam 00:01 secara kontinu.
+4. **`is_rush_hour`**: Penanda biner untuk jam sibuk pagi (06.00–09.00) dan sore (16.00–19.00) khas wilayah DKI Jakarta.
+5. **`is_weekend`**: Penanda biner untuk membedakan hari kerja dengan hari libur akhir pekan.
+6. **`segment_volatility`**: Standar deviasi historis waktu tempuh per segmen untuk menangkap tingkat kerentanan kemacetan segmen tersebut.
+7. **`trip_progress`**: Posisi relatif bus dalam putaran (`stop_sequence / max_stop_sequence`).
+
+*Kolom Output Wajib*: Sesuai dengan spesifikasi tugas, berkas luaran akhir (`outputs/training_ready.parquet`) wajib menyertakan kolom **`is_gap_suspected`** dan **`deviation_ratio`** (rasio aktual terhadap rata-rata historis bawaan). Kami juga menyediakan kolom `deviation_ratio_clean` (rasio terhadap rata-rata bersih buatan sendiri).
+
+---
+
+## 7. Analisis Perbandingan Model
+
+> [!IMPORTANT]
+> Seluruh model diuji pada set data uji umum yang sama (2.325 putaran lengkap, waktu dalam detik) untuk menjamin perbandingan yang adil (*fair comparison*).
+
+| Model | MAE (s) | RMSE (s) | MAPE Segment | **Loop MAE (s)** | Catatan Metodologis & Operasional |
+|---|---:|---:|---:|---:|---|
+| *Baseline (seg, hour mean)* | 50,8 | 125,3 | 46,1% | 510,3 | Acuan performa dasar (*floor*) |
+| **XGBoost (MAE-log)** ★ | **38,1** | **113,9** | 30,4% | **328,8** | **Model Terpilih**: Performa *Loop MAE* terbaik, ringan |
+| *XGBoost (Huber-log)* | 38,7 | 115,3 | 29,7% | 333,9 | Penanganan gradien mulus untuk outlier |
+| *LightGBM (MSE-log)* | 38,9 | 115,6 | **28,9%** | 340,1 | Menghasilkan nilai MAPE segmen terbaik |
+| *XGBoost (MSE-log)* | 39,1 | 116,7 | 28,9% | 344,4 | Model pohon baseline dengan optimasi L2 |
+| *LSTM (Huber-log)* | 40,2 | 119,6 | 31,1% | 353.9 | Pola urutan kurang sensitif pada loop pendek |
+| *Ensemble (Weighted Convex)* | — | — | — | ~331,0 | Rata-rata tertimbang XGBoost & LSTM ($w=0,65$) |
+
+### Alasan Pemilihan Model Final (XGBoost MAE-log)
+Model **XGBoost (MAE-log)** dipilih sebagai model terbaik untuk diimplementasikan di lingkungan produksi karena keunggulan pada aspek berikut:
+1. **Akurasi Bisnis Terbaik**: Menghasilkan metrik *Loop MAE* terkecil (328,8 detik) yang berarti kesalahan prediksi waktu satu putaran penuh bus rata-rata hanya sekitar 5,4 menit (peningkatan akurasi sebesar **-35,6%** di bawah model dasar rata-rata historis).
+2. **Latensi Inferensi Sangat Rendah**: Model tabular XGBoost memiliki waktu prediksi rata-rata hanya **0,85 ms per putaran** (~19 segmen). Ini sangat ideal untuk operasional real-time BRT jika dibandingkan dengan LSTM yang membutuhkan waktu 50–100× lebih lama dan infrastruktur komputasi (GPU/PyTorch) yang mahal.
+3. **Kemudahan Pemeliharaan**: Model hanya disimpan dalam satu berkas berukuran kecil (`model_xgb.json`) dan proses latih ulang (*retraining*) dapat diselesaikan hanya dalam hitungan detik.
+
+### Apakah Model Ensemble Memberikan Kemenangan?
+**Tidak.** Eksperimen membuktikan model gabungan (*ensemble*) tidak memberikan perbaikan performa yang signifikan dibandingkan model tunggal XGBoost:
+* Pendekatan *Weighted Convex* (kombinasi XGBoost dan LSTM) hanya memberikan peningkatan minor di atas model dasarnya, dan kinerjanya masih **kalah** dibandingkan model XGBoost tunggal yang dilatih penuh pada seluruh data latih.
+* Metode *stacking* berbasis Ridge regression justru menghasilkan performa yang lebih buruk karena mengalami *overfitting* pada set validasi yang kecil.
+* Kegagalan ini disebabkan oleh tingginya korelasi kesalahan (*error*) antara LSTM dan XGBoost karena keduanya menggunakan basis data historis yang serupa. Selain itu, dengan panjang putaran bus yang relatif pendek (median 19 segmen), model tabular berbasis pohon sudah mampu mengekstrak informasi temporal secara maksimal melalui fitur rata-rata bergerak (*rolling mean*).
+
+---
+
+## 8. Hasil & Metrik Akhir
+Model terpilih **XGBoost (MAE-log)** dievaluasi pada data uji (Feb 22–28) dan memperoleh hasil akhir sebagai berikut:
+* **MAE**: 38,1 detik
+* **RMSE**: 113,9 detik
+* **MAPE Segment**: 30,4%
+* **Loop MAE**: 328,8 detik (penurunan kesalahan sebesar **-35,6%** dari *baseline* awal 510,3 detik)
+
+---
+
+## 9. Keterbatasan Model & Pengembangan Selanjutnya
+Beberapa keterbatasan model saat ini yang dapat dijadikan arah pengembangan selanjutnya untuk meningkatkan akurasi meliputi:
+1. **Integrasi Data Asli Tanpa Kebocoran**: Mendapatkan data baseline historis yang bersih langsung dari sistem operasi pusat BRT tanpa adanya anomali pembatasan artifisial seperti pada fitur `average_time_sec` bawaan.
+2. **Model Multi-Rute**: Dataset saat ini hanya mencakup satu rute (`route_code` hanya memiliki 1 nilai unik). Penggunaan data multi-rute akan membuka peluang penerapan teknik *target encoding* tingkat rute dan meningkatkan kemampuan generalisasi model pada rute yang berbeda.
+3. **Penyertaan Sinyal Eksogen**: Memasukkan data faktor luar seperti kondisi cuaca (hujan/terang), kalender hari libur nasional, kejadian khusus, dan informasi kemacetan hulu (*upstream*) secara real-time.
+4. **Peningkatan Kualitas GPS**: Mengurangi tingkat kegagalan sensor GPS (saat ini menyebabkan 47% loop tidak lengkap) agar model sekuensial seperti LSTM dapat menangkap informasi dependensi spasio-temporal secara lebih maksimal.
+
+---
+
+## 10. Daftar Berkas Deliverables
+* **Logika reusable**: Terletak pada direktori [src/](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/src) (`data.py`, `features.py`, `metrics.py`, `models.py`).
+* **Notebook Eksperimen**: Terletak pada direktori [notebooks/](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/notebooks) (`01_eda.ipynb` hingga `04_evaluation.ipynb`).
+* **Model Terlatih**: Berkas XGBoost final tersimpan di [outputs/model_xgb.json](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/outputs/model_xgb.json).
+* **Dataframe Siap Latih**: File Parquet keluaran akhir tersimpan di [outputs/training_ready.parquet](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/outputs/training_ready.parquet) (berisi kolom tambahan `is_gap_suspected` dan `deviation_ratio`).
+* **Laporan Analitis**: Berkas tertulis ringkas format Markdown di [WRITEUP.md](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/WRITEUP.md).
+* **Log Keputusan Teknis**: Berkas pelacak keputusan arsitektur di [DECISIONS.md](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/DECISIONS.md).
