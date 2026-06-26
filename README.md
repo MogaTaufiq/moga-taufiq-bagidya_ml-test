@@ -47,12 +47,7 @@ notebooks/01_eda.ipynb  →  02_feature_engineering.ipynb  →  03_modeling.ipyn
 ## 3. Struktur Repositori
 
 ```
-├── CLAUDE.md              # Panduan instruksi agen AI (Claude Code)
-├── TASK_BRIEF.md          # Spesifikasi tugas teknikal awal
-├── DATA_FINDINGS.md       # Catatan eksplorasi data & verifikasi kebocoran data
-├── METHODOLOGY.md         # Dokumentasi alur kerja metodologi pemodelan
 ├── DECISIONS.md           # Log keputusan teknis terperinci (D0 - D11)
-├── README_OUTLINE.md      # Template struktur README awal
 ├── requirements.txt       # Daftar ketergantungan library Python
 ├── README.md              # Berkas ini (panduan utama proyek)
 ├── WRITEUP.md             # Laporan analitis ringkas (maksimal 2 halaman)
@@ -109,7 +104,7 @@ Model akhir dilatih menggunakan 15 fitur terpilih. Tujuh fitur utama yang terbuk
 6. **`segment_volatility`**: Standar deviasi historis waktu tempuh per segmen untuk menangkap tingkat kerentanan kemacetan segmen tersebut.
 7. **`trip_progress`**: Posisi relatif bus dalam putaran (`stop_sequence / max_stop_sequence`).
 
-*Kolom Output Wajib*: Sesuai dengan spesifikasi tugas, berkas luaran akhir (`outputs/training_ready.parquet`) wajib menyertakan kolom **`is_gap_suspected`** dan **`deviation_ratio`** (rasio aktual terhadap rata-rata historis bawaan). Kami juga menyediakan kolom `deviation_ratio_clean` (rasio terhadap rata-rata bersih buatan sendiri).
+*Kolom Output Wajib*: Sesuai dengan spesifikasi tugas, berkas luaran akhir (`outputs/training_ready.parquet`) wajib menyertakan kolom **`is_gap_suspected`** dan **`deviation_ratio`** (rasio aktual terhadap rata-rata historis bawaan). Saya juga menyediakan kolom `deviation_ratio_clean` (rasio terhadap rata-rata bersih buatan sendiri).
 
 ---
 
