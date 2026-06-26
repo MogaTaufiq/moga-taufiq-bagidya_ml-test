@@ -16,7 +16,8 @@ import torch; torch.set_num_threads(8)
 clean, _ = clean_outliers(add_gap_flag(load_raw()), verbose=False)
 feat = F.build_base_features(clean)
 tr, te = time_split(feat)
-art = F.fit_feature_artifacts(tr); tr = F.transform_with_artifacts(tr, art); te = F.transform_with_artifacts(te, art)
+tr, te = F.add_dwell_feature(tr, te)              # D12: dwell terminal feature
+art = F.fit_feature_artifacts(tr); tr = F.transform_with_artifacts(tr, art); te = F.transform_with_artifacts(te, art)  # D13 bus_encoded di sini
 te_c = sequence_ready(te)
 Xtr, ytr_log, _ = Mdl.make_xy(tr); Xc, _, yc = Mdl.make_xy(te_c)
 print(f"train={len(tr)} rows | common test = {te_c['no_do'].nunique()} loops")
@@ -77,6 +78,9 @@ Mdl.compare_table([Mdl.evaluate("XGBoost (base_tr)", yt, xt, dt),
 
 # %% [markdown]
 # ## Kesimpulan (D7/D8)
-# **XGBoost (MAE-log) = terbaik, Loop MAE 328.8s (lift 35.6%).** LSTM lebih lemah (loop
-# pendek + error berkorelasi). Ensemble hanya ~1.5% di atas base-nya & **kalah** dari XGBoost
-# full-train → **pilih XGBoost tunggal**: latensi 0.85 ms/loop, 1 artifact `.json`, retrain detik.
+# **XGBoost (MAE-log) = terbaik, Loop MAE 258.8s (lift 49.3% vs baseline 510.3).** Setelah
+# menambahkan 2 fitur (`time_since_prev_arrival_sec` + `bus_encoded`, D12/D13), Loop MAE turun
+# dari 328.8 → 258.8 = **−21.3% improvement** dari kondisi sebelumnya.
+# LSTM lebih lemah (loop pendek + error berkorelasi). Ensemble diuji sebelumnya & **kalah**
+# dari XGBoost tunggal → **pilih XGBoost tunggal**: latensi 1.5 ms/loop, 1 artifact `.json`,
+# retrain detik. Pemilihan tetap konsisten dengan kriteria simpler + faster + competitive.

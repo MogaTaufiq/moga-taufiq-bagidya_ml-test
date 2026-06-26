@@ -5,76 +5,81 @@
 ---
 
 ## 1. Pendahuluan & Temuan Kunci Sistemik
-Laporan ini menyajikan solusi *machine learning* untuk memprediksi waktu tempuh (*travel time*) bus kota per segmen koridor BRT (antar-halte berurutan). Berdasarkan analisis eksplorasi data (*Exploratory Data Analysis* - EDA) pada dataset `AI_Engineer_dataset.parquet` yang berukuran 351.103 baris, ditemukan dua anomali struktural penting yang mendominasi seluruh keputusan arsitektural model:
+Laporan ini menyajikan solusi prediksi waktu tempuh bus BRT per segmen (antar-halte berurutan) dari 351.103 baris GPS tracking. Dua anomali struktural mendominasi seluruh keputusan arsitektural:
 
-1. **Kebocoran Data Target (*Target Leakage*) pada `average_time_sec`**:  
-   Ditemukan bahwa rasio antara target aktual (`traveling_time_sec`) dengan fitur `average_time_sec` dibatasi (*capped*) secara artifisial persis pada rentang $[0, 2]$. Tidak ada satu pun observasi (0%) yang memiliki rasio di atas 2,0, dan 87% data terkonsentrasi sangat rapat pada rentang $[0.75, 1.25]$. Pada uji *ablation*, memasukkan kolom ini sebagai fitur memotong MAE model hingga 44,4% dan menyerap 85,1% tingkat kepentingan fitur (*feature importance*). Pola ini mustahil terjadi pada operasional nyata (di mana kemacetan parah atau insiden dapat membuat waktu tempuh melebihi 2× rata-rata historis). Oleh karena itu, fitur `average_time_sec` diidentifikasi sebagai *target leakage* dan **dihapus sepenuhnya** dari fitur latih. Kami menghitung ulang *baseline* historis yang bersih (*expanding mean* per segmen-jam yang di-*shift*) sebagai pengganti yang aman.
-2. **Definisi Unit Putaran (Loop) yang Tepat**:  
-   Spesifikasi awal menyarankan penggunaan `trip_id` sebagai representasi putaran bus dan mengabaikan `no_do`. Namun, data menunjukkan `trip_id` hanya memiliki 13 nilai unik (dengan rata-rata ~27.000 baris per nilai), yang menjadikannya sebagai penanda varian rute utama. Sebaliknya, `no_do` memiliki 17.857 nilai unik dengan median 19 segmen berurutan dan urutan `stop_sequence` yang teratur. Dengan demikian, **`no_do` diidentifikasi sebagai unit satu putaran fisik bus (loop)** yang valid, dan digunakan sebagai unit *sequence key* pada model sekuensial serta basis evaluasi metrik bisnis utama (*Loop MAE*).
+1. **Target Leakage pada `average_time_sec`**: rasio aktual/average ter-*capped* persis di $[0, 2]$ dengan 0% baris di atas 2,0 (87% terkonsentrasi di $[0,75, 1,25]$). Uji *ablation* — memasukkan kolom ini memotong MAE 44,4% dan menyerap 85,1% importance — mengkonfirmasi sinyal target. Pola ini mustahil pada operasional nyata. Fitur **dihapus** dan diganti baseline bersih *expanding mean* per (segmen, jam) yang di-*shift*.
+2. **Unit Putaran = `no_do`, bukan `trip_id`**: `trip_id` hanya 13 nilai (~27.000 baris/nilai) → varian rute. `no_do` memiliki 17.857 nilai, median 19 segmen berurutan → unit satu putaran fisik bus yang valid. Digunakan sebagai *sequence key* LSTM dan basis *Loop MAE*.
 
 ---
 
 ## 2. Strategi Perjalanan Tidak Lengkap (*Incomplete Trips*)
-Sebanyak 47,4% dari total putaran (*no_do*) memiliki celah (*gap*) pada `stop_sequence` akibat kegagalan tangkapan GPS atau halte yang terlewat. Penanganan masalah ini diselesaikan secara spesifik berdasarkan kebutuhan model (*context-specific strategy*):
-* **Model Tabular (XGBoost/LightGBM)**: Data perjalanan tidak lengkap **dipertahankan dan ditandai** menggunakan fitur biner `is_gap_suspected`. Karena model tabular memproses setiap baris secara independen, nilai target waktu tempuh pada segmen tertentu tetap valid dan akurat meskipun segmen lain dalam putaran yang sama hilang. Membuang seluruh data putaran bergap akan mengurangi data latih sebesar 42% secara sia-sia.
-* **Model Sekuensial (LSTM) & Evaluasi Loop MAE**: Untuk melatih LSTM dan menghitung metrik *Loop MAE* secara adil, kami **hanya menggunakan putaran yang lengkap** (tanpa gap). Putaran dengan gap akan mengacaukan representasi spasio-temporal sekuensial dan menghasilkan penjumlahan akumulasi waktu tempuh yang tidak sahih.
-* **Kebijakan Interpolasi**: Kami memilih untuk **tidak menginterpolasi target** pada data latih karena tindakan ini menyuntikkan label artifisial (*noise*) yang dapat menurunkan kualitas generalisasi model. Putaran sangat pendek (fragmen 1 segmen) dibuang dari analisis sekuensial karena tidak memiliki konteks historis.
+47,4% putaran memiliki celah (*gap*) `stop_sequence`. Strategi spesifik per konteks model:
+* **Tabular (XGBoost/LightGBM)**: data ber-gap **dipertahankan + ditandai** via fitur biner `is_gap_suspected`. Tiap baris diproses independen — target segmen tetap valid meski segmen lain hilang. Membuang seluruh loop ber-gap akan mengurangi data latih 42% secara sia-sia.
+* **Sekuensial (LSTM) & Loop MAE**: hanya **putaran lengkap** yang dipakai — gap merusak representasi spasio-temporal & akumulasi waktu loop.
+* **Interpolasi**: **tidak diterapkan** pada target — menyuntikkan label artifisial (*noise*) yang menurunkan generalisasi. Fragmen 1 segmen dibuang dari analisis sekuensial.
 
 ---
 
-## 3. Penanganan Skewness Ekstrem & Desain Metrik Evaluasi
-Dataset target memiliki tingkat kemiringan (*skewness*) ekstrem sebesar 58,33 dengan nilai maksimum anomali fisis mencapai ~11 hari akibat kegagalan sensor. Dua teknik diterapkan untuk mengatasi masalah ini:
-1. **Pembersihan Outlier Plausibilitas Fisis**: Membuang baris data dengan target `traveling_time_sec > 3600` detik (1 jam). Persentil ke-99 menunjukkan angka 32 menit (plausibel untuk kemacetan parah di Jakarta), namun melompat ke 6,6 jam pada persentil ke-99,5. Batas 1 jam menyapu bersih anomali sensor (0,85% data) dengan aman tanpa memotong fenomena kemacetan riil.
-2. **Transformasi Logaritmik Target**: Menggunakan transformasi $log(x + 1)$ atau `log1p` yang menekan tingkat kemiringan (*skewness*) dari 58,33 menjadi 2,21. Selama evaluasi, seluruh prediksi dikembalikan ke satuan detik asli menggunakan fungsi eksponensial `expm1`.
+## 3. Penanganan Skewness Ekstrem & Desain Loss
+Skew mentah **58,33** dengan max anomali ~11 hari (sensor error/dwell terminal). Dua teknik:
+1. **Outlier plausibilitas fisis**: drop `traveling_time_sec > 3600` detik. Patahan tajam p99=32 menit (wajar untuk macet Jakarta) → p99,5=6,6 jam (mustahil 1 segmen BRT). Batas 1 jam menyapu 0,85% data anomali tanpa memotong macet riil.
+2. **Transformasi `log1p`** menekan skew dari 58,33 → 2,21. Evaluasi dikembalikan ke detik via `expm1`.
 
-**Dampak pada *Loss Function* & Metrik**:  
-Di dalam ruang logaritmik, fungsi optimasi *Mean Squared Error* (MSE) bertindak seperti *relative error* di ruang asli. Kesalahan prediksi sebesar 30 detik pada segmen pendek (misal 60 detik) akan dihukum lebih berat dibandingkan kesalahan 30 detik pada segmen panjang (misal 600 detik). Ini sangat sesuai dengan karakteristik operasional BRT. Kami menguji tiga objektif optimasi di ruang log: L1 (*Mean Absolute Error* - MAE), Huber (*pseudo-huber*), dan L2 (MSE). Objektif **L1 (MAE-log) dipilih sebagai model final** karena menghasilkan performa terbaik pada metrik *Loop MAE* dan lebih tangguh (*robust*) terhadap sisa distribusi ekor panjang (*long-tail*).
+**Dampak pada loss & metrik**: di ruang log, MSE bertindak seperti *relative error* di ruang asli — error 30 detik pada segmen 60 detik dihukum lebih berat daripada pada 600 detik (sesuai konteks BRT). Saya menguji tiga objektif: L1 (MAE), Huber, L2 (MSE). **L1 (MAE-log) terpilih** karena Loop MAE terbaik dan lebih *robust* terhadap sisa ekor panjang. *Loop MAE* dipilih sebagai metrik bisnis utama karena merepresentasikan kesalahan satu putaran penuh — langsung relevan untuk *headway*/jadwal BRT.
 
 ---
 
 ## 4. Penanganan Kelangkaan Data (*Sparsity*)
-Meskipun secara akumulatif kelangkaan data kombinasi segmen-jam tergolong ringan (hanya 3,3% dari 1.029 kombinasi segmen-jam memiliki kurang dari 30 observasi), kami menerapkan strategi berlapis untuk mencegah terjadinya *overfitting* pada kebisingan (*noise*):
-1. **Hierarchical Fallback (Mundur Berjenjang)**: Jika kombinasi (segmen, jam) tertentu memiliki observasi yang sangat sedikit, estimasi model akan didukung oleh rata-rata segmen secara keseluruhan, dan jika masih minim, akan mundur ke rata-rata global sistem.
-2. **Bayesian Smoothing (Penghalusan Bayesian)**: Kami menghitung rata-rata historis menggunakan teknik *Bayesian target encoding*:
-   $$\mu_{smooth} = \frac{n \cdot \bar{y}_{group} + m \cdot \bar{y}_{global}}{n + m}$$
-   di mana $n$ adalah jumlah observasi kelompok, dan bobot prior $m = 20$. Kombinasi dengan sampel kecil secara otomatis akan ditarik mendekati rata-rata global. Estimasi ini **hanya dihitung pada data latih** untuk mencegah kebocoran temporal (*temporal leakage*).
-3. **Regularisasi Model Pohon**: Mengatur parameter `min_child_weight=5` pada XGBoost untuk melarang pembentukan daun (*leaf node*) baru dari observasi yang terlalu sedikit.
+Sparsity ringan (3,3% dari 1.029 kombinasi segmen-jam <30 observasi). Strategi tetap diterapkan untuk generalisasi:
+1. **Hierarchical fallback**: (segmen, jam) → segmen → global.
+2. **Bayesian smoothing**: $\mu_{smooth} = (n \cdot \bar{y}_{group} + m \cdot \bar{y}_{global})/(n + m)$, prior $m=20$, fit **hanya di train**. Kombinasi sampel sedikit otomatis tertarik ke rata-rata global.
+3. **Regularisasi pohon**: `min_child_weight=5` (XGB) / `min_child_samples=30` (LGBM) — cegah daun lahir dari segelintir baris langka.
 
 ---
 
-## 5. Justifikasi Fitur Baru (Domain-Driven)
-Kami merancang 15 fitur untuk model tabular. Tujuh fitur utama yang memberikan kontribusi terbesar (di luar kolom mentah) dijabarkan sebagai berikut:
-1. **`rolling_mean_segment_5`**: Rata-rata bergerak dari 5 observasi terakhir pada segmen yang sama (di-*shift* 1 langkah agar *leakage-free*). Fitur ini menangkap kondisi kemacetan terkini (*real-time traffic trend*) dan menjadi fitur terkuat pada model final dengan nilai tingkat kepentingan (*importance*) sekitar 0,50 (XGBoost MAE-log).
-2. **`baseline_segment_hour`**: Rata-rata kumulatif waktu tempuh per segmen-jam (*expanding mean*, di-*shift*). Berfungsi sebagai pengganti fitur `average_time_sec` yang bersih dan bebas kebocoran data.
-3. **`hour_sin` & `hour_cos`**: Representasi siklis waktu jam. Menghubungkan kedekatan fisis antara jam 23:59 dan jam 00:01 secara kontinu yang tidak dapat ditangkap oleh representasi numerik linear.
-4. **`is_rush_hour`**: Penanda biner untuk jam sibuk pagi (06.00–09.00) dan sore (16.00–19.00) khas wilayah DKI Jakarta untuk menangkap variasi lalu lintas komuter.
-5. **`is_weekend`**: Penanda biner untuk membedakan pola pergerakan lalu lintas hari kerja dengan hari libur akhir pekan.
-6. **`segment_volatility`**: Standar deviasi historis waktu tempuh per segmen. Berfungsi sebagai proksi tingkat ketidakpastian (*traffic volatility*) atau kerentanan kemacetan kronis segmen tersebut.
-7. **`trip_progress`**: Posisi relatif bus dalam putaran (`stop_sequence / max_stop_sequence`). Berguna untuk menangkap akumulasi keterlambatan bus di akhir perjalanan.
+## 5. Justifikasi Fitur (Domain-Driven)
+Total **17 fitur** untuk model tabular. Tujuh fitur dengan kontribusi terbesar:
+1. **`rolling_mean_segment_5`**: rata-rata 5 observasi terakhir per segmen (di-*shift*, leakage-free). Menangkap kondisi kemacetan terkini → fitur terkuat di model final.
+2. **`baseline_segment_hour`**: *expanding mean* per (segmen, jam) di-*shift* — pengganti bersih `average_time_sec` yang bocor.
+3. **`time_since_prev_arrival_sec`** *(baru, D12)*: selisih *departure* sekarang − *arrival* segmen terakhir bus yang sama. Proksi *dwell* terminal & headway antar-loop. Korelasi linear dengan target = -0,001, namun sinyal **non-linear** kuat: uji permutasi membuat Loop MAE meledak 259 → 424 detik. Menyumbang mayoritas perbaikan ~70 detik.
+4. **`bus_encoded`** *(baru, D13)*: *target encoding* rata-rata waktu per `bus_body_no` (*Bayesian smoothing* $m=20$, fit di train saja). Menangkap karakteristik bus (umur, supir, mesin).
+5. **`hour_sin`/`hour_cos`** + **`is_rush_hour`** (06–09 & 16–19) + **`is_weekend`**: fitur waktu siklis & komuter Jakarta, dari *departure* saja (anti-leakage).
+6. **`segment_volatility`**: std historis waktu per segmen (proksi kerentanan macet kronis).
+7. **`trip_progress`**: posisi relatif bus dalam putaran (`stop_sequence / max`) — menangkap akumulasi keterlambatan di akhir loop.
 
 ---
 
-## 6. Justifikasi Pemilihan Model & Kajian Ensemble
-Kami menguji performa model dengan membagi data secara temporal (*time-based split*) berbasis *loop-aware*: periode Feb 1–21 (258.590 baris) sebagai data latih dan Feb 22–28 (89.519 baris) sebagai data uji. Evaluasi dilakukan secara adil pada set data uji umum berisi 2.325 putaran lengkap (ruang asli detik):
+## 5.5. Proses Iterasi Peningkatan (v1 15 fitur → v2 17 fitur)
+Model awal dengan **15 fitur** menghasilkan Loop MAE **328,8 detik** (lift -35,6%). Mencari ruang perbaikan, saya menganalisis komposisi *outlier* yang dibuang (D3): **99,2% berada di `stop_sequence == 1`**, **99,9% di posisi terminal akhir loop**, dengan puncak jam 20–22. Pola ini **bukan *random sensor error*** (dugaan awal), melainkan **dwell terminal** — bus parkir menunggu jadwal. Sinyal operasional hilang ketika baris dwell di-drop.
+
+**Tindakan**: (1) Fitur **`time_since_prev_arrival_sec` (D12)** — proksi dwell, selisih *departure* sekarang dengan *arrival* segmen terakhir bus yang sama (leakage-free). (2) Fitur **`bus_encoded` (D13)** — target encoding `bus_body_no` (Bayesian smoothing). (3) **Tuning Optuna 30-trial** diuji namun tidak memperbaiki (val LoopMAE 321,9 vs default 258,8) → default dipertahankan, hindari overtuning pada val kecil.
+
+| Iterasi | Fitur | MAE | RMSE | MAPE | **Loop MAE** | Lift |
+|---|--:|--:|--:|--:|--:|--:|
+| v1 (awal) | 15 | 38,1 | 113,9 | 30,4% | 328,8 | -35,6% |
+| **v2 (final)** | **17** | **31,8** | **94,0** | **23,6%** | **258,8** | **-49,3%** |
+
+**Verifikasi anti-leakage** untuk `time_since_prev_arrival_sec`: (i) median AE tetap 12,57s (bukan ~0); (ii) korelasi linear dengan target = -0,001 (sinyal murni non-linear); (iii) uji permutasi mengacak fitur di test set membuat Loop MAE meledak **259 → 424 detik (Δ +165s)** — bukti fitur asli yang bertanggung jawab atas perbaikan, bukan artifact perhitungan.
+
+---
+
+## 6. Pemilihan Model & Kajian Ensemble
+Split temporal *loop-aware*: train Feb 1–21 (258.590 baris) vs test Feb 22–28 (89.519 baris). Evaluasi fair pada set uji umum 2.325 putaran lengkap (ruang detik):
 
 | Model | MAE (s) | RMSE (s) | MAPE Seg | **Loop MAE (s)** | Karakteristik Inferensi |
 |---|---:|---:|---:|---:|---|
 | *Baseline (seg, hour mean)* | 50.8 | 125.3 | 46.1% | 510.3 | Instan, tanpa pembelajaran |
-| **XGBoost (MAE-log) — Terpilih** | **38.1** | **113.9** | 30.4% | **328.8** | **Cepat (0,85 ms/loop), 1 berkas `.json`** |
-| *XGBoost (Huber-log)* | 38.7 | 115.3 | 29.7% | 333.9 | Cepat, gradien halus |
-| *LightGBM (MSE-log)* | 38.9 | 115.6 | **28.9%** | 340.1 | Cepat, efisien memori |
-| *LSTM (Huber-log)* | 40.2 | 119.6 | 31.1% | 353.9 | Lambat, rentang urutan pendek |
-| *Ensemble (Weighted Convex)* | — | — | — | ~331.0 | Sangat kompleks, butuh 2 model |
+| **XGBoost (MAE-log) — Terpilih** | **31.8** | **94.0** | 23.6% | **258.8** | **Cepat (1,47 ms/loop), 1 berkas `.json`** |
+| *XGBoost (MSE-log)* | 32.4 | 94.3 | **23.6%** | 266.9 | Optimasi L2 di ruang log |
+| *LightGBM (MSE-log)* | 32.3 | **93.1** | 23.6% | 267.4 | Implementasi cepat & efisien memori |
+| *XGBoost (Huber-log)* | 32.3 | 96.1 | 23.7% | 267.8 | Gradien mulus untuk outlier |
+| *LSTM (Huber-log)* | 41.0 | 125.1 | 30.5% | 368.5 | Lambat, rentang urutan pendek |
+| *Ensemble (Weighted Convex)* | — | — | — | tidak menang | XGB+LSTM kalah dari XGB tunggal (diuji) |
 
-### Analisis Kegagalan Ensemble
-Kami menguji teknik *Ensemble* menggabungkan XGBoost dan LSTM melalui metode rata-rata tertimbang (*weighted convex* dengan bobot $w=0,65$ untuk XGBoost) dan metode *stacking* berbasis regresi Ridge. Hasil eksperimen membuktikan bahwa **model ensemble tidak menghasilkan perbaikan performa yang signifikan**:
-* Performa *Weighted Convex* (~331.0s) hanya membaik tipis di atas model dasarnya, dan masih **kalah telak** dibandingkan jika model XGBoost tunggal dilatih pada data latih penuh (*full-training* set) yang menghasilkan *Loop MAE* terbaik sebesar **328,8 detik**.
-* Metode *stacking* menghasilkan performa yang lebih buruk akibat *overfitting* pada set validasi yang berukuran kecil (965 putaran).
+### Ensemble & Strategi Penggabungan
+Saya menguji dua strategi penggabungan output XGBoost + LSTM: **weighted convex** (bobot $w=0,65$ untuk XGBoost, di-fit di validasi) dan **stacking** (Ridge meta-learner). Kedua **tidak menang signifikan**: convex hanya tipis di atas base-nya & masih kalah dari XGBoost tunggal full-train (258,8 detik); stacking *overfit* pada val kecil (965 putaran). Alasan kegagalan: (i) error base berkorelasi tinggi karena keduanya pakai `baseline_segment_hour`, (ii) sekuens pendek (median 19) → XGBoost tabular sudah mengekstrak sinyal temporal maksimal via *rolling*/*expanding mean*. **Kapan ensemble tidak menguntungkan**: ketika error base berkorelasi, satu model mendominasi, atau panjang sekuens tidak cukup memberi sinyal tambahan ke LSTM — ketiganya berlaku di sini.
 
-Ensemble gagal memberikan manfaat karena **korelasi kesalahan (*error*) antar model dasar sangat tinggi**. LSTM dan XGBoost menggunakan fitur penunjuk waktu historis yang sama (`baseline_segment_hour`). Selain itu, karena sekuens putaran relatif pendek (median 19 segmen), model tabular berbasis pohon keputusan (XGBoost) sudah mampu mengekstrak sinyal temporal secara maksimal melalui fitur *rolling mean* dan *expanding mean*.
-
-### Rekomendasi Produksi
-Kami memilih **XGBoost Tunggal (MAE-log)** sebagai model final dengan pertimbangan operasional produksi:
-1. **Akurasi Bisnis Tertinggi**: Menghasilkan metrik *Loop MAE* terkecil (328,8 detik), memberikan peningkatan performa sebesar **-35,6%** di bawah *baseline* rata-rata historis.
-2. **Latensi Inferensi Sangat Rendah**: Waktu prediksi per putaran (19 segmen) hanya **0,85 ms**, berbanding terbalik dengan model LSTM yang 50–100× lebih lambat dan membutuhkan lingkungan runtime PyTorch yang berat.
-3. **Kemudahan Pemeliharaan (*Maintainability*)**: Model dapat disimpan dalam satu berkas berukuran kecil (`model_xgb.json`) tanpa ketergantungan pustaka eksternal yang kompleks, serta proses latih ulang (*retraining*) yang selesai hanya dalam hitungan detik ketika terjadi pergeseran data (*data drift*).
+### Rekomendasi Produksi: XGBoost Tunggal (MAE-log)
+1. **Akurasi**: Loop MAE 258,8 detik (**-49,3%** vs baseline).
+2. **Latensi**: 1,47 ms/loop — 50–100× lebih cepat dari LSTM, siap real-time.
+3. **Maintainability**: 1 berkas `.json`, tanpa runtime PyTorch, retrain hitungan detik.

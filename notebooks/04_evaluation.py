@@ -12,7 +12,8 @@ from src import features as F, models as Mdl, metrics as M
 
 clean, _ = clean_outliers(add_gap_flag(load_raw()), verbose=False)
 feat = F.build_base_features(clean); tr, te = time_split(feat)
-art = F.fit_feature_artifacts(tr); tr = F.transform_with_artifacts(tr, art); te = F.transform_with_artifacts(te, art)
+tr, te = F.add_dwell_feature(tr, te)              # D12 dwell terminal
+art = F.fit_feature_artifacts(tr); tr = F.transform_with_artifacts(tr, art); te = F.transform_with_artifacts(te, art)  # D13 bus_encoded
 te_c = sequence_ready(te)
 model = xgb.XGBRegressor(); model.load_model("../outputs/model_xgb.json")
 Xc, _, yc = Mdl.make_xy(te_c)

@@ -96,21 +96,55 @@ def add_deviation_ratios(df: pd.DataFrame, target: str = TARGET) -> pd.DataFrame
     return df
 
 
+# ----------------------------------------------- per-bus dwell / idle proxy (D12)
+def add_dwell_feature(train: pd.DataFrame, test: pd.DataFrame,
+                      time_col: str = TIME_COL,
+                      arrival_col: str = "arrival_time") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """time_since_prev_arrival_sec = current departure - previous row's arrival,
+    per bus_body_no (sorted by departure). Leakage-free: only uses past arrivals
+    (previous row), which are known before predicting the current segment.
+
+    Computed on the COMBINED train+test frame so the first test row of each bus uses
+    the last train arrival as its previous (no cold-start NaN at the split boundary).
+    The median for cold-start fill is taken from TRAIN only.
+    """
+    a = train.assign(_s="tr"); b = test.assign(_s="te")
+    both = pd.concat([a, b]).sort_values(["bus_body_no", time_col]).copy()
+    prev_arr = both.groupby("bus_body_no")[arrival_col].shift(1)
+    both["time_since_prev_arrival_sec"] = (
+        (both[time_col] - prev_arr).dt.total_seconds().clip(0, 86400)
+    )
+    med = float(both.loc[both["_s"] == "tr", "time_since_prev_arrival_sec"].median())
+    both["time_since_prev_arrival_sec"] = both["time_since_prev_arrival_sec"].fillna(med)
+    tr_out = both[both["_s"] == "tr"].drop(columns="_s").sort_index()
+    te_out = both[both["_s"] == "te"].drop(columns="_s").sort_index()
+    return tr_out, te_out
+
+
 # ----------------------------------------------- train-fit stats (fit/transform)
 def fit_feature_artifacts(train: pd.DataFrame, target: str = TARGET, smoothing_m: int = 20) -> dict:
     """Fit everything that must come from TRAIN ONLY: segment volatility, category
-    vocabularies, and the smoothed (segment,hour) baseline MODEL (D9 sparsity)."""
+    vocabularies, the smoothed (segment,hour) baseline MODEL (D9 sparsity), and the
+    Bayesian-smoothed bus_body_no target encoding (D13)."""
+    g_mean = float(train[target].mean())
+    bs = train.groupby("bus_body_no")[target].agg(["mean", "count"])
+    bus_encoding = (
+        (bs["count"] * bs["mean"] + smoothing_m * g_mean) / (bs["count"] + smoothing_m)
+    ).to_dict()
     return {
         "segment_volatility": train.groupby("segment_id")[target].std().to_dict(),
         "global_volatility": float(train[target].std()),
         "segment_categories": sorted(train["segment_id"].unique().tolist()),
         "trip_categories": sorted(train["trip_id"].unique().tolist()),
         "baseline_model": fit_segment_hour_baseline(train, target, smoothing_m),
+        "bus_encoding": bus_encoding,
+        "global_target_mean": g_mean,
     }
 
 
 def transform_with_artifacts(df: pd.DataFrame, art: dict) -> pd.DataFrame:
-    """Map train-fit stats onto df (train or test). Unseen categories -> code -1."""
+    """Map train-fit stats onto df (train or test). Unseen categories -> code -1;
+    unseen buses -> global target mean (no panic, no inf)."""
     df = df.copy()
     df["segment_volatility"] = (
         df["segment_id"].map(art["segment_volatility"]).fillna(art["global_volatility"])
@@ -119,6 +153,7 @@ def transform_with_artifacts(df: pd.DataFrame, art: dict) -> pd.DataFrame:
     trip_idx = {c: i for i, c in enumerate(art["trip_categories"])}
     df["segment_id_code"] = df["segment_id"].map(seg_idx).fillna(-1).astype(int)
     df["trip_id_code"] = df["trip_id"].map(trip_idx).fillna(-1).astype(int)
+    df["bus_encoded"] = df["bus_body_no"].map(art["bus_encoding"]).fillna(art["global_target_mean"])
     return df
 
 
@@ -159,12 +194,16 @@ def build_base_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Model inputs. NOTE: cast is_gap_suspected -> int when building the design matrix.
+# Model inputs (17 features). NOTE: cast is_gap_suspected -> int when building the
+# design matrix. The two trailing features (dwell + bus encoding) are added by
+# add_dwell_feature() and transform_with_artifacts() respectively — they don't come
+# from build_base_features (they depend on the train/test split).
 FEATURE_COLS = [
     "hour", "day_of_week", "is_weekend", "is_rush_hour", "hour_sin", "hour_cos",
     "stop_sequence", "trip_progress", "loop_n_segments", "is_gap_suspected",
     "baseline_segment_hour", "rolling_mean_segment_5", "segment_volatility",
     "segment_id_code", "trip_id_code",
+    "time_since_prev_arrival_sec", "bus_encoded",
 ]
 OUTPUT_ONLY_COLS = ["deviation_ratio", "deviation_ratio_clean"]   # contain target -> not features
 LEAKAGE_DROP = ["average_time_sec", "arrival_time", "from_arrival_time_str"]

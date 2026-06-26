@@ -14,7 +14,8 @@ from src import features as F, models as Mdl
 raw = load_raw()
 flagged = add_gap_flag(raw)                       # is_gap_suspected + loop_n_segments (RAW order)
 clean, report = clean_outliers(flagged)          # drop > 3600s (D3)
-report
+print(report)
+print(f"\nFitur dipakai model = {len(F.FEATURE_COLS)} fitur (termasuk 2 fitur tambahan: time_since_prev_arrival_sec + bus_encoded)")
 
 # %% [markdown]
 # ## Fitur leakage-free (dihitung di frame penuh, time-ordered, di-shift)
@@ -33,7 +34,8 @@ feat[new_cols].head()
 
 # %%
 tr, te = time_split(feat)
-art = F.fit_feature_artifacts(tr)                 # volatility, kategori, baseline-model: TRAIN saja
+tr, te = F.add_dwell_feature(tr, te)              # D12: time_since_prev_arrival_sec (leakage-free, combined-frame)
+art = F.fit_feature_artifacts(tr)                 # volatility, kategori, baseline-model, bus_encoded (D13): TRAIN saja
 tr = F.transform_with_artifacts(tr, art)
 te = F.transform_with_artifacts(te, art)
 print(f"train {len(tr)} ({tr['departure_time'].min().date()}..{tr['departure_time'].max().date()}) | "
@@ -42,8 +44,9 @@ print("overlap loop train∩test (harus 0):", len(set(tr['no_do']) & set(te['no_
 
 # %% [markdown]
 # ## Bukti TIDAK ada leakage
-# XGBoost jujur (15 fitur, tanpa `average_time_sec`): **median AE ~14.5s** — kalau ada fitur
-# yang membocorkan target, median AE jatuh ke ~0. `baseline_segment_hour` korelasi 0.69 (wajar).
+# XGBoost jujur (17 fitur, tanpa `average_time_sec`): **median AE ~12s** — kalau ada fitur
+# yang membocorkan target, median AE jatuh ke ~0. `baseline_segment_hour` korelasi 0.69 (wajar);
+# `time_since_prev_arrival_sec` korelasi linear hampir 0 (-0.001) tapi sinyal non-linear kuat (lihat permutation test di DECISIONS D12).
 
 # %%
 Xtr, ytr_log, _ = Mdl.make_xy(tr); Xte, _, yte = Mdl.make_xy(te)

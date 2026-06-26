@@ -2,14 +2,14 @@
 **Kandidat:** Moga Taufiq Bagidya  
 **Peran:** AI/ML Engineer  
 
-Proyek ini bertujuan untuk memprediksi waktu tempuh (*travel time*) bus kota per segmen koridor BRT (antar-halte berurutan) menggunakan data tracking GPS historis. Melalui pembersihan data yang ketat, mitigasi kebocoran data (*target leakage*), dan rekayasa fitur (*feature engineering*), model terpilih **XGBoost (MAE-log)** berhasil mencapai nilai **Loop MAE sebesar 328,8 detik** pada data uji (7 hari terakhir), yang menunjukkan peningkatan akurasi sebesar **-35,6% di bawah rata-rata historis (*baseline*)** dengan latensi inferensi yang sangat rendah, yaitu **0,85 ms per putaran**.
+Proyek ini bertujuan untuk memprediksi waktu tempuh (*travel time*) bus kota per segmen koridor BRT (antar-halte berurutan) menggunakan data tracking GPS historis. Melalui pembersihan data yang ketat, mitigasi kebocoran data (*target leakage*), dan rekayasa fitur (*feature engineering*) — termasuk dua fitur tambahan ber-impak tinggi (*dwell terminal* dan *bus target encoding*) — model terpilih **XGBoost (MAE-log)** berhasil mencapai nilai **Loop MAE sebesar 258,8 detik** pada data uji (7 hari terakhir), yang menunjukkan peningkatan akurasi sebesar **-49,3% di bawah rata-rata historis (*baseline*)** dengan latensi inferensi yang sangat rendah, yaitu **1,47 ms per putaran**.
 
 ---
 
 ## 1. Ringkasan Eksekutif
 Tugas ini diselesaikan dengan memformulasikan prediksi waktu tempuh segmen bus sebagai masalah regresi tabular tingkat segmen. Berdasarkan analisis eksplorasi data, ditemukan bahwa fitur bawaan `average_time_sec` merupakan *target leakage* karena rasio aktual terhadap rata-rata ter-cap secara tidak wajar pada rentang $[0, 2]$. Di samping itu, unit putaran (*loop*) bus yang sahih diidentifikasi sebagai `no_do`, bukan `trip_id`. 
 
-Model final berbasis **XGBoost** yang menggunakan target transformasi logaritmik berhasil mengalahkan model dasar rata-rata historis sebesar 35,6% pada metrik bisnis utama (*Loop MAE*). Eksperimen terhadap model sekuensial (LSTM) dan metode gabungan (*ensemble*) tidak menunjukkan peningkatan performa yang signifikan, sehingga model tunggal XGBoost dipilih untuk diimplementasikan di lingkungan produksi karena keunggulannya dalam kesederhanaan, latensi, dan pemeliharaan.
+Model final berbasis **XGBoost** yang menggunakan target transformasi logaritmik berhasil mengalahkan model dasar rata-rata historis sebesar 49,3% pada metrik bisnis utama (*Loop MAE*). Setelah ditambahkan dua fitur baru hasil insight operasional — `time_since_prev_arrival_sec` (proksi *dwell* terminal) dan `bus_encoded` (target encoding per-bus) — Loop MAE turun dari 328,8 → 258,8 detik (penurunan ~21,3% di atas pipeline awal). Eksperimen terhadap model sekuensial (LSTM) dan metode gabungan (*ensemble*) tidak menunjukkan peningkatan performa yang signifikan, sehingga model tunggal XGBoost dipilih untuk diimplementasikan di lingkungan produksi karena keunggulannya dalam kesederhanaan, latensi, dan pemeliharaan.
 
 ---
 
@@ -47,7 +47,7 @@ notebooks/01_eda.ipynb  →  02_feature_engineering.ipynb  →  03_modeling.ipyn
 ## 3. Struktur Repositori
 
 ```
-├── DECISIONS.md           # Log keputusan teknis terperinci (D0 - D11)
+├── DECISIONS.md           # Log keputusan teknis terperinci (D0 - D13)
 ├── requirements.txt       # Daftar ketergantungan library Python
 ├── README.md              # Berkas ini (panduan utama proyek)
 ├── WRITEUP.md             # Laporan analitis ringkas (maksimal 2 halaman)
@@ -95,14 +95,16 @@ notebooks/01_eda.ipynb  →  02_feature_engineering.ipynb  →  03_modeling.ipyn
 ---
 
 ## 6. Rekayasa Fitur (*Feature Engineering*)
-Model akhir dilatih menggunakan 15 fitur terpilih. Tujuh fitur utama yang terbukti memberikan kontribusi terbesar meliputi:
+Model akhir dilatih menggunakan **17 fitur** terpilih. Sembilan fitur utama yang memberikan kontribusi terbesar meliputi:
 1. **`rolling_mean_segment_5`**: Rata-rata bergerak dari 5 observasi terakhir pada segmen yang sama (di-*shift* 1 langkah agar *leakage-free*).
 2. **`baseline_segment_hour`**: Rata-rata kumulatif waktu tempuh per segmen-jam (*expanding mean*, di-*shift*). Berfungsi sebagai pengganti fitur `average_time_sec` yang bersih dan bebas kebocoran data.
-3. **`hour_sin` & `hour_cos`**: Representasi siklis waktu jam. Menghubungkan kedekatan fisis antara jam 23:59 dan jam 00:01 secara kontinu.
-4. **`is_rush_hour`**: Penanda biner untuk jam sibuk pagi (06.00–09.00) dan sore (16.00–19.00) khas wilayah DKI Jakarta.
-5. **`is_weekend`**: Penanda biner untuk membedakan hari kerja dengan hari libur akhir pekan.
-6. **`segment_volatility`**: Standar deviasi historis waktu tempuh per segmen untuk menangkap tingkat kerentanan kemacetan segmen tersebut.
-7. **`trip_progress`**: Posisi relatif bus dalam putaran (`stop_sequence / max_stop_sequence`).
+3. **`time_since_prev_arrival_sec`** *(baru, D12)*: Selisih waktu antara *departure* segmen sekarang dengan *arrival* segmen terakhir bus yang sama. Proksi *dwell* terminal & headway antar-loop. Korelasi linear dengan target hampir nol (-0,001), namun sinyal non-linear besar — uji permutasi membuat Loop MAE meledak dari 259 → 424 detik.
+4. **`bus_encoded`** *(baru, D13)*: *Target encoding* rata-rata waktu tempuh per `bus_body_no` dengan *Bayesian smoothing* ($m=20$). Menangkap karakteristik per-bus (umur kendaraan, gaya supir, kondisi mesin) yang konsisten lintas segmen.
+5. **`hour_sin` & `hour_cos`**: Representasi siklis waktu jam. Menghubungkan kedekatan fisis antara jam 23:59 dan jam 00:01 secara kontinu.
+6. **`is_rush_hour`**: Penanda biner untuk jam sibuk pagi (06.00–09.00) dan sore (16.00–19.00) khas wilayah DKI Jakarta.
+7. **`is_weekend`**: Penanda biner untuk membedakan hari kerja dengan hari libur akhir pekan.
+8. **`segment_volatility`**: Standar deviasi historis waktu tempuh per segmen untuk menangkap tingkat kerentanan kemacetan segmen tersebut.
+9. **`trip_progress`**: Posisi relatif bus dalam putaran (`stop_sequence / max_stop_sequence`).
 
 *Kolom Output Wajib*: Sesuai dengan spesifikasi tugas, berkas luaran akhir (`outputs/training_ready.parquet`) wajib menyertakan kolom **`is_gap_suspected`** dan **`deviation_ratio`** (rasio aktual terhadap rata-rata historis bawaan). Saya juga menyediakan kolom `deviation_ratio_clean` (rasio terhadap rata-rata bersih buatan sendiri).
 
@@ -116,17 +118,17 @@ Model akhir dilatih menggunakan 15 fitur terpilih. Tujuh fitur utama yang terbuk
 | Model | MAE (s) | RMSE (s) | MAPE Segment | **Loop MAE (s)** | Catatan Metodologis & Operasional |
 |---|---:|---:|---:|---:|---|
 | *Baseline (seg, hour mean)* | 50,8 | 125,3 | 46,1% | 510,3 | Acuan performa dasar (*floor*) |
-| **XGBoost (MAE-log)** ★ | **38,1** | **113,9** | 30,4% | **328,8** | **Model Terpilih**: Performa *Loop MAE* terbaik, ringan |
-| *XGBoost (Huber-log)* | 38,7 | 115,3 | 29,7% | 333,9 | Penanganan gradien mulus untuk outlier |
-| *LightGBM (MSE-log)* | 38,9 | 115,6 | **28,9%** | 340,1 | Menghasilkan nilai MAPE segmen terbaik |
-| *XGBoost (MSE-log)* | 39,1 | 116,7 | 28,9% | 344,4 | Model pohon baseline dengan optimasi L2 |
-| *LSTM (Huber-log)* | 40,2 | 119,6 | 31,1% | 353.9 | Pola urutan kurang sensitif pada loop pendek |
-| *Ensemble (Weighted Convex)* | — | — | — | ~331,0 | Rata-rata tertimbang XGBoost & LSTM ($w=0,65$) |
+| **XGBoost (MAE-log)** ★ | **31,8** | **94,0** | 23,6% | **258,8** | **Model Terpilih**: Performa *Loop MAE* terbaik, ringan |
+| *XGBoost (MSE-log)* | 32,4 | 94,3 | **23,6%** | 266,9 | Optimasi L2 di ruang log |
+| *LightGBM (MSE-log)* | 32,3 | 93,1 | 23,6% | 267,4 | Implementasi LightGBM cepat |
+| *XGBoost (Huber-log)* | 32,3 | 96,1 | 23,7% | 267,8 | Penanganan gradien mulus untuk outlier |
+| *LSTM (Huber-log)* | 41,0 | 125,1 | 30,5% | 368,5 | Pola urutan kurang sensitif pada loop pendek |
+| *Ensemble (Weighted Convex)* | — | — | — | tidak menang | XGB+LSTM kalah dari XGB tunggal (diuji sebelumnya) |
 
 ### Alasan Pemilihan Model Final (XGBoost MAE-log)
 Model **XGBoost (MAE-log)** dipilih sebagai model terbaik untuk diimplementasikan di lingkungan produksi karena keunggulan pada aspek berikut:
-1. **Akurasi Bisnis Terbaik**: Menghasilkan metrik *Loop MAE* terkecil (328,8 detik) yang berarti kesalahan prediksi waktu satu putaran penuh bus rata-rata hanya sekitar 5,4 menit (peningkatan akurasi sebesar **-35,6%** di bawah model dasar rata-rata historis).
-2. **Latensi Inferensi Sangat Rendah**: Model tabular XGBoost memiliki waktu prediksi rata-rata hanya **0,85 ms per putaran** (~19 segmen). Ini sangat ideal untuk operasional real-time BRT jika dibandingkan dengan LSTM yang membutuhkan waktu 50–100× lebih lama dan infrastruktur komputasi (GPU/PyTorch) yang mahal.
+1. **Akurasi Bisnis Terbaik**: Menghasilkan metrik *Loop MAE* terkecil (258,8 detik) yang berarti kesalahan prediksi waktu satu putaran penuh bus rata-rata hanya sekitar 4,3 menit (peningkatan akurasi sebesar **-49,3%** di bawah model dasar rata-rata historis).
+2. **Latensi Inferensi Sangat Rendah**: Model tabular XGBoost memiliki waktu prediksi rata-rata hanya **1,47 ms per putaran** (~19 segmen). Ini sangat ideal untuk operasional real-time BRT jika dibandingkan dengan LSTM yang membutuhkan waktu 50–100× lebih lama dan infrastruktur komputasi (GPU/PyTorch) yang mahal.
 3. **Kemudahan Pemeliharaan**: Model hanya disimpan dalam satu berkas berukuran kecil (`model_xgb.json`) dan proses latih ulang (*retraining*) dapat diselesaikan hanya dalam hitungan detik.
 
 ### Apakah Model Ensemble Memberikan Kemenangan?
@@ -139,10 +141,10 @@ Model **XGBoost (MAE-log)** dipilih sebagai model terbaik untuk diimplementasika
 
 ## 8. Hasil & Metrik Akhir
 Model terpilih **XGBoost (MAE-log)** dievaluasi pada data uji (Feb 22–28) dan memperoleh hasil akhir sebagai berikut:
-* **MAE**: 38,1 detik
-* **RMSE**: 113,9 detik
-* **MAPE Segment**: 30,4%
-* **Loop MAE**: 328,8 detik (penurunan kesalahan sebesar **-35,6%** dari *baseline* awal 510,3 detik)
+* **MAE**: 31,8 detik
+* **RMSE**: 94,0 detik
+* **MAPE Segment**: 23,6%
+* **Loop MAE**: 258,8 detik (penurunan kesalahan sebesar **-49,3%** dari *baseline* awal 510,3 detik)
 
 ---
 
