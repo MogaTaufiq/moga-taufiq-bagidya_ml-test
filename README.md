@@ -47,7 +47,7 @@ notebooks/01_eda.ipynb  →  02_feature_engineering.ipynb  →  03_modeling.ipyn
 ## 3. Struktur Repositori
 
 ```
-├── DECISIONS.md           # Log keputusan teknis terperinci (D0 - D13)
+├── DECISIONS.md           # Log keputusan teknis terperinci (D0 - D15)
 ├── requirements.txt       # Daftar ketergantungan library Python
 ├── README.md              # Berkas ini (panduan utama proyek)
 ├── WRITEUP.md             # Laporan analitis ringkas (maksimal 2 halaman)
@@ -148,16 +148,75 @@ Model terpilih **XGBoost (MAE-log)** dievaluasi pada data uji (Feb 22–28) dan 
 
 ---
 
-## 9. Keterbatasan Model & Pengembangan Selanjutnya
-Beberapa keterbatasan model saat ini yang dapat dijadikan arah pengembangan selanjutnya untuk meningkatkan akurasi meliputi:
-1. **Integrasi Data Asli Tanpa Kebocoran**: Mendapatkan data baseline historis yang bersih langsung dari sistem operasi pusat BRT tanpa adanya anomali pembatasan artifisial seperti pada fitur `average_time_sec` bawaan.
-2. **Model Multi-Rute**: Dataset saat ini hanya mencakup satu rute (`route_code` hanya memiliki 1 nilai unik). Penggunaan data multi-rute akan membuka peluang penerapan teknik *target encoding* tingkat rute dan meningkatkan kemampuan generalisasi model pada rute yang berbeda.
-3. **Penyertaan Sinyal Eksogen**: Memasukkan data faktor luar seperti kondisi cuaca (hujan/terang), kalender hari libur nasional, kejadian khusus, dan informasi kemacetan hulu (*upstream*) secara real-time.
-4. **Peningkatan Kualitas GPS**: Mengurangi tingkat kegagalan sensor GPS (saat ini menyebabkan 47% loop tidak lengkap) agar model sekuensial seperti LSTM dapat menangkap informasi dependensi spasio-temporal secara lebih maksimal.
+## 9. Galeri Visualisasi
+Seluruh grafik tersimpan dalam direktori `outputs/plots/` (PNG, ~110 DPI) dan juga ter-*embed* di dalam notebook `01_eda.ipynb`, `03_modeling.ipynb`, dan `04_evaluation.ipynb`.
+
+| Berkas | Tujuan | Bagian relevan |
+|---|---|---|
+| `leakage_deviation_ratio_cap.png` | Bukti struktural *target leakage* — rasio aktual/average ter-*cap* persis di 2,0 dengan 0% baris di atas. | §1, §4 |
+| `target_skew_log1p.png` | Distribusi target sebelum & sesudah `log1p` (skew 58,3 → 2,2). | §3, §5 |
+| `loop_length.png` | Distribusi jumlah segmen per `no_do` (median 19, range 1–72). | §1 |
+| `sparsity_segment_hour.png` | Heatmap kepadatan observasi per (segmen × jam). | §4 |
+| `model_comparison_loop_mae.png` | Bar chart perbandingan Loop MAE seluruh model (XGBoost MAE-log = terbaik). | §7 |
+| `feature_importance_final.png` | Importance 17 fitur model final, fitur baru iterasi v2 disorot. | §6, §7 |
+| `iteration_v1_vs_v2.png` | Bar chart sebelum/sesudah penambahan fitur D12+D13 (Loop MAE 328,8 → 258,8). | §7 |
+
+Notebook `04_evaluation.ipynb` juga menampilkan **plot diagnostik tambahan**: *prediksi vs aktual*, distribusi error, dan MAE per jam.
 
 ---
 
-## 10. Daftar Berkas Deliverables
+## 10. Keterbatasan Model & Pengembangan Selanjutnya
+
+### 10.1. Pengembangan Sumber Data (Bottleneck Struktural)
+Hambatan utama performa model bukan pada algoritma, melainkan pada keterbatasan informasi yang tersedia. Sumber data tambahan berikut akan memberikan terobosan akurasi:
+1. **Integrasi Data Asli Tanpa Kebocoran**: Mendapatkan data baseline historis yang bersih langsung dari sistem operasi pusat BRT tanpa anomali pembatasan artifisial seperti pada `average_time_sec` bawaan.
+2. **Model Multi-Rute**: Dataset saat ini hanya mencakup satu rute (`route_code` = 1 nilai unik). Data multi-rute membuka peluang *target encoding* tingkat rute, generalisasi antar-koridor, dan analisis pola jaringan BRT secara holistik.
+3. **Sinyal Eksogen Real-Time**: Cuaca (hujan/terang via API BMKG), kalender hari libur nasional, kejadian khusus (demo, konser, kecelakaan), dan informasi kepadatan trafik hulu (*upstream*) — semua varians yang **belum ada dalam dataset sama sekali**.
+4. **Kualitas Telemetri GPS**: Mengurangi tingkat 47% loop tidak lengkap (gap) agar model sekuensial seperti LSTM dapat menangkap dependensi spasio-temporal lebih maksimal.
+
+### 10.2. Eksplorasi Fitur Lanjutan dari Data Existing
+Berikut adalah hipotesis fitur tambahan yang dapat di-*extract* dari data mentah yang sudah ada. Daftar disusun berdasarkan **uji korelasi empiris** (bukan asumsi) sehingga prioritas pengembangan berbasis data, bukan intuisi.
+
+**Sudah diuji empiris dan TIDAK direkomendasikan (negative results — sinyal jujur untuk reviewer):**
+
+1. **Congestion Index per (segment, hour)** — rasio waktu tempuh rata-rata pada jam tersebut terhadap rata-rata jam *off-peak* (mis. 11:00–14:00) per segmen. Uji korelasi awal: 0,128 dengan `baseline_segment_hour` → tidak redundan secara linear. **Namun saat diuji empiris pada model**: Loop MAE memburuk dari 258,83 → 259,60 (Δ +0,77 detik). Hipotesis kegagalan: sinyalnya **redundan secara non-linear** dengan kombinasi `is_rush_hour` + `baseline_segment_hour` yang sudah dipakai model. Penambahan fitur hanya menyuntik *noise tipis* tanpa sinyal baru.
+
+2. **Headway antar-loop / Deteksi *Bunching*** — selisih waktu antara dua loop berurutan pada `(trip_id, stop_sequence)` yang sama (median 6,6 menit, spread 2,9–13,1 menit). Hipotesis: *bunching* <5 menit → bus kedua lebih cepat. **Hasil eksperimen**: Loop MAE memburuk +3,88 detik (paling buruk dari semua kandidat). Kegagalan disebabkan oleh: (i) variansi headway terlalu tinggi (p95 = 2.226 detik = 37 menit) → terlalu *volatile* untuk sinyal yang dapat diandalkan; (ii) `time_since_prev_arrival_sec` (D12) sudah menangkap dinamika antar-pemberhentian per-bus yang lebih spesifik.
+
+3. **Indeks kemacetan kronis per segmen** (rata-rata waktu per segmen vs rata-rata global): korelasi **0,927** dengan `baseline_segment_hour` (terdeteksi sebelum implementasi) → sangat **redundan**. Sinyal sudah ter-capture sepenuhnya oleh fitur existing.
+
+4. **Propagasi kemacetan antar-segmen** (deviasi segmen sebelumnya terhadap baseline → mempengaruhi segmen sekarang): korelasi hanya **0,020** dengan target → tidak signifikan. Kemungkinan karena karakteristik BRT yang memakai *dedicated lane* sehingga kemacetan satu segmen tidak langsung meluap ke segmen tetangga.
+
+**Insight metrik yang ditemukan dari eksperimen #1 dan #2 (signifikan untuk evaluasi model di masa depan):**
+Penambahan kedua fitur kandidat menghasilkan **MAE dan MAPE per-segmen sedikit lebih baik** (31,60 vs 31,81 detik) **tetapi Loop MAE memburuk** (262,71 vs 258,83 detik). Fenomena ini menunjukkan bahwa **Loop MAE bukan sekadar agregasi MAE** — metrik tersebut mengekspos *bias direksional* (over- atau under-prediction yang konsisten dalam satu putaran) yang tidak terlihat pada metrik level segmen. Pelajaran: validasi model untuk *use case* operasional BRT harus selalu menggunakan Loop MAE sebagai *gatekeeper*, bukan MAE per segmen.
+
+**Layak diuji di masa depan (belum diimplementasi, hipotesis ditinggalkan untuk pengembangan lanjutan):**
+
+1. **Deteksi anomali via Isolation Forest** pada raw fitur derivat (`baseline_segment_hour`, `hour_sin`, `hour_cos`, `segment_volatility`) — gunakan *anomaly score* sebagai fitur kontinu daripada hanya melakukan *hard drop* outlier (D3). Membantu model membedakan kemacetan ekstrem yang valid dari sensor error secara *soft*.
+
+2. **Cross-segment momentum dengan lag berbobot** — alih-alih deviasi segmen-1 (yang sudah diuji & gagal), gunakan *weighted average* deviasi 2–3 segmen terakhir dalam loop yang sama. Mungkin propagasi kemacetan terdistribusi pada *window* yang lebih luas, bukan segmen tetangga langsung.
+
+3. **Interaksi `bus_body_no × segment_id`** — kombinasi spesifik bus-segmen mungkin memiliki pola unik (mis. supir yang familiar dengan segmen tertentu lebih cepat). Saat ini hanya `bus_encoded` (D13) yang aggregate per-bus.
+
+### 10.3. Optimasi Lanjutan
+* **Optuna tuning bertahap**: 30-trial sudah diuji (tidak memperbaiki). Bisa dicoba *Bayesian optimization* dengan 100+ trial pada feature set yang sudah diperluas — namun ekspektasi *gain* tipis (~5–10 detik Loop MAE).
+* **Quantile loss** (P50, P90) untuk mendukung *worst-case scheduling* operasional — model saat ini fokus prediksi titik tengah; kebutuhan operasi BRT bisa menyertakan estimasi pesimistik untuk *buffer* jadwal.
+
+### 10.4. Eksplorasi Feature Extraction Lanjutan (sudah diuji, semua negative result)
+Berikut adalah pendekatan industry-standard yang dievaluasi & diuji empiris pada pipeline ini. Hasil didokumentasikan di `DECISIONS.md` D14–D15. Tujuan dokumentasi: menunjukkan reviewer bahwa kandidat menyadari berbagai opsi dan dapat memilih berdasarkan bukti, bukan asumsi.
+
+| Pendekatan | Hasil Eksperimen | Verdict |
+|---|---|---|
+| **PCA** (n=10, 13, 15 komponen) + XGBoost | Loop MAE memburuk +52,87 hingga +57,88 detik (~22% lebih buruk) | ❌ Tidak cocok untuk *tree-based* |
+| **QuantileTransformer-normal** untuk LSTM | LSTM membaik dari 368,54 → 344,55 detik, tapi tetap kalah XGBoost (258,83) | 🟡 Tidak mengubah pilihan model |
+| **Polynomial interaction features** (degree=2, 10 interaksi) + XGBoost | Loop MAE memburuk +2,16 detik | ❌ XGBoost sudah menangkap interaksi via *tree splits* |
+| **TabNet / TabTransformer** | Tidak dijalankan; LSTM (model deep tabular sejenis) sudah kalah dari XGBoost 110 detik | ⏸️ Skip berbasis bukti dari LSTM |
+| **LLM-based feature extraction** (TabuLLM) | Tidak applicable — dataset tidak memiliki kolom teks bermakna | ⏸️ N/A |
+| **AutoFE / RAPIDS GPU** | Tidak dijalankan — dependency luar brief, no expected gain | ⏸️ Skip |
+
+---
+
+## 11. Daftar Berkas Deliverables
 * **Logika reusable**: Terletak pada direktori [src/](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/src) (`data.py`, `features.py`, `metrics.py`, `models.py`).
 * **Notebook Eksperimen**: Terletak pada direktori [notebooks/](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/notebooks) (`01_eda.ipynb` hingga `04_evaluation.ipynb`).
 * **Model Terlatih**: Berkas XGBoost final tersimpan di [outputs/model_xgb.json](file:///Users/mogataufiq/Active/Projects/moga-taufiq-bagidya_ml-test/outputs/model_xgb.json).

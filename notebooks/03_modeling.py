@@ -77,6 +77,20 @@ Mdl.compare_table([Mdl.evaluate("XGBoost (base_tr)", yt, xt, dt),
                    Mdl.evaluate(f"Ensemble convex (w={w:.2f})", yt, w * xt + (1 - w) * lt, dt)])
 
 # %% [markdown]
+# ## Visualisasi Perbandingan Model
+
+# %%
+import matplotlib.pyplot as plt
+tbl = Mdl.compare_table(rows).sort_values("LoopMAE_s")
+colors = ['#e74c3c' if 'Baseline' in m else '#27ae60' if m.startswith('XGBoost (MAE-log)') else '#3498db' for m in tbl['Model']]
+fig, ax = plt.subplots(figsize=(9, 4.5))
+bars = ax.barh(tbl['Model'], tbl['LoopMAE_s'], color=colors)
+for b, v in zip(bars, tbl['LoopMAE_s']):
+    ax.text(v+5, b.get_y()+b.get_height()/2, f"{v:.1f}", va='center', fontsize=10)
+ax.set_xlabel("Loop MAE (detik)"); ax.set_title("Perbandingan Model — Loop MAE (common test 2.325 loop)")
+ax.invert_yaxis(); fig.tight_layout(); plt.show()
+
+# %% [markdown]
 # ## Kesimpulan (D7/D8)
 # **XGBoost (MAE-log) = terbaik, Loop MAE 258.8s (lift 49.3% vs baseline 510.3).** Setelah
 # menambahkan 2 fitur (`time_since_prev_arrival_sec` + `bus_encoded`, D12/D13), Loop MAE turun

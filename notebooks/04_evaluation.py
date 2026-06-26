@@ -44,6 +44,20 @@ axs[2].bar(by_h.index, by_h.values, color="#d35400"); axs[2].set(title="MAE per 
 plt.tight_layout(); plt.show()
 
 # %% [markdown]
+# ## Feature Importance Model Final
+# Hijau = fitur baru iterasi v2 (D12 `time_since_prev_arrival_sec` + D13 `bus_encoded`).
+
+# %%
+imp_df = pd.DataFrame({'fitur': F.FEATURE_COLS, 'importance': model.feature_importances_}).sort_values('importance', ascending=True)
+clr = ['#27ae60' if f in ('time_since_prev_arrival_sec','bus_encoded') else '#3498db' for f in imp_df['fitur']]
+fig, ax = plt.subplots(figsize=(9, 5.5))
+bars = ax.barh(imp_df['fitur'], imp_df['importance'], color=clr)
+for b, v in zip(bars, imp_df['importance']):
+    ax.text(v+0.003, b.get_y()+b.get_height()/2, f"{v:.3f}", va='center', fontsize=9)
+ax.set_xlabel("Importance (gain-based)"); ax.set_title("Feature Importance — XGBoost MAE-log (17 fitur)")
+fig.tight_layout(); plt.show()
+
+# %% [markdown]
 # ## Loop MAE — akurasi satu putaran (metrik bisnis utama)
 
 # %%

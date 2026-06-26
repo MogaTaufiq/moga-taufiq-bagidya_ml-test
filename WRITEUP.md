@@ -7,7 +7,7 @@
 ## 1. Pendahuluan & Temuan Kunci Sistemik
 Laporan ini menyajikan solusi prediksi waktu tempuh bus BRT per segmen (antar-halte berurutan) dari 351.103 baris GPS tracking. Dua anomali struktural mendominasi seluruh keputusan arsitektural:
 
-1. **Target Leakage pada `average_time_sec`**: rasio aktual/average ter-*capped* persis di $[0, 2]$ dengan 0% baris di atas 2,0 (87% terkonsentrasi di $[0,75, 1,25]$). Uji *ablation* — memasukkan kolom ini memotong MAE 44,4% dan menyerap 85,1% importance — mengkonfirmasi sinyal target. Pola ini mustahil pada operasional nyata. Fitur **dihapus** dan diganti baseline bersih *expanding mean* per (segmen, jam) yang di-*shift*.
+1. **Target Leakage pada `average_time_sec`**: rasio aktual/average ter-*capped* persis di $[0, 2]$ dengan 0% baris di atas 2,0 (87% terkonsentrasi di $[0,75, 1,25]$; lihat `outputs/plots/leakage_deviation_ratio_cap.png`). Uji *ablation* — memasukkan kolom ini memotong MAE 44,4% dan menyerap 85,1% importance — mengkonfirmasi sinyal target. Pola ini mustahil pada operasional nyata. Fitur **dihapus** dan diganti baseline bersih *expanding mean* per (segmen, jam) yang di-*shift*.
 2. **Unit Putaran = `no_do`, bukan `trip_id`**: `trip_id` hanya 13 nilai (~27.000 baris/nilai) → varian rute. `no_do` memiliki 17.857 nilai, median 19 segmen berurutan → unit satu putaran fisik bus yang valid. Digunakan sebagai *sequence key* LSTM dan basis *Loop MAE*.
 
 ---
@@ -23,7 +23,7 @@ Laporan ini menyajikan solusi prediksi waktu tempuh bus BRT per segmen (antar-ha
 ## 3. Penanganan Skewness Ekstrem & Desain Loss
 Skew mentah **58,33** dengan max anomali ~11 hari (sensor error/dwell terminal). Dua teknik:
 1. **Outlier plausibilitas fisis**: drop `traveling_time_sec > 3600` detik. Patahan tajam p99=32 menit (wajar untuk macet Jakarta) → p99,5=6,6 jam (mustahil 1 segmen BRT). Batas 1 jam menyapu 0,85% data anomali tanpa memotong macet riil.
-2. **Transformasi `log1p`** menekan skew dari 58,33 → 2,21. Evaluasi dikembalikan ke detik via `expm1`.
+2. **Transformasi `log1p`** menekan skew dari 58,33 → 2,21 (lihat `outputs/plots/target_skew_log1p.png`). Evaluasi dikembalikan ke detik via `expm1`.
 
 **Dampak pada loss & metrik**: di ruang log, MSE bertindak seperti *relative error* di ruang asli — error 30 detik pada segmen 60 detik dihukum lebih berat daripada pada 600 detik (sesuai konteks BRT). Saya menguji tiga objektif: L1 (MAE), Huber, L2 (MSE). **L1 (MAE-log) terpilih** karena Loop MAE terbaik dan lebih *robust* terhadap sisa ekor panjang. *Loop MAE* dipilih sebagai metrik bisnis utama karena merepresentasikan kesalahan satu putaran penuh — langsung relevan untuk *headway*/jadwal BRT.
 
@@ -59,12 +59,14 @@ Model awal dengan **15 fitur** menghasilkan Loop MAE **328,8 detik** (lift -35,6
 | v1 (awal) | 15 | 38,1 | 113,9 | 30,4% | 328,8 | -35,6% |
 | **v2 (final)** | **17** | **31,8** | **94,0** | **23,6%** | **258,8** | **-49,3%** |
 
+*(Visual: `outputs/plots/iteration_v1_vs_v2.png` & `feature_importance_final.png`).*
+
 **Verifikasi anti-leakage** untuk `time_since_prev_arrival_sec`: (i) median AE tetap 12,57s (bukan ~0); (ii) korelasi linear dengan target = -0,001 (sinyal murni non-linear); (iii) uji permutasi mengacak fitur di test set membuat Loop MAE meledak **259 → 424 detik (Δ +165s)** — bukti fitur asli yang bertanggung jawab atas perbaikan, bukan artifact perhitungan.
 
 ---
 
 ## 6. Pemilihan Model & Kajian Ensemble
-Split temporal *loop-aware*: train Feb 1–21 (258.590 baris) vs test Feb 22–28 (89.519 baris). Evaluasi fair pada set uji umum 2.325 putaran lengkap (ruang detik):
+Split temporal *loop-aware*: train Feb 1–21 (258.590 baris) vs test Feb 22–28 (89.519 baris). Evaluasi fair pada set uji umum 2.325 putaran lengkap (ruang detik; visual: `outputs/plots/model_comparison_loop_mae.png`):
 
 | Model | MAE (s) | RMSE (s) | MAPE Seg | **Loop MAE (s)** | Karakteristik Inferensi |
 |---|---:|---:|---:|---:|---|

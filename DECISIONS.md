@@ -158,3 +158,45 @@ Dokumen ini mencatat setiap keputusan arsitektural dan teknis utama selama penge
   * *Pertanyaan*: *"Mengapa target encoding aman dan tidak menyebabkan leakage?"*
   * *Jawaban*: *"Target encoding hanya melanggar leakage jika encoding dihitung dari data yang sama dengan yang dievaluasi. Saya menerapkannya dengan disiplin: encoding fit pada train saja, lalu di-map ke test sebagai lookup tabel. Bus yang muncul pertama kali di test akan di-fallback ke rata-rata global. Smoothing m=20 juga mencegah encoding bus dengan sedikit observasi (mis. 3 baris) mendapat encoding ekstrem yang tidak generalisir."*
 * **Status**: FINAL
+
+### [D14] Penolakan Fitur `congestion_idx` dan `headway_loop_sec` (Negative Result Dokumentasi)
+* **Konteks**: Setelah model v2 (17 fitur, Loop MAE 258,8 detik) stabil, dilakukan eksplorasi fitur tambahan berbasis perspektif data analis: (a) **`congestion_idx`** = rasio `baseline_segment_hour / segment_offpeak_baseline` untuk mengkuantifikasi derajat pelambatan relatif vs jam santai; (b) **`headway_loop_sec`** = selisih waktu antara loop berurutan pada `(trip_id, stop_sequence)` yang sama untuk menangkap *bunching* / kepadatan operasional bus.
+* **Uji korelasi awal (lulus)**: `congestion_idx` korelasi hanya 0,128 dengan `baseline_segment_hour` (tidak redundan secara linear); `headway` memiliki spread distribusi luas (median 6,6 menit, p25 2,9, p75 13,1) — keduanya secara teori layak.
+* **Hasil eksperimen empiris (3 kombinasi)**:
+  * +`congestion_idx` saja: Loop MAE 259,60 detik (**Δ +0,77 detik vs current 258,83**)
+  * +`headway_loop_sec` saja: Loop MAE 262,71 detik (**Δ +3,88 detik**)
+  * +keduanya: Loop MAE 259,67 detik (**Δ +0,84 detik**)
+* **Keputusan**: **Tolak kedua fitur**. Pertahankan model 17 fitur sebagai final.
+* **Alasan kegagalan empiris**:
+  * `congestion_idx` ternyata **redundan secara non-linear** dengan kombinasi `is_rush_hour` + `baseline_segment_hour` + `segment_volatility` yang sudah dipakai. Penambahan hanya menyuntik *noise tipis*.
+  * `headway_loop_sec` per `(trip_id, stop_sequence)` terlalu *volatile* (p95 = 2.226 detik = 37 menit) — terlalu *noisy* untuk sinyal stabil. Selain itu, `time_since_prev_arrival_sec` (D12) sudah menangkap dinamika per-bus yang lebih spesifik dan reliable.
+* **Insight metrik penting (signifikan untuk evaluasi di masa depan)**: Eksperimen ini mengungkap fenomena di mana **MAE dan MAPE per-segmen sedikit lebih baik** (31,60 vs 31,81 detik) **TETAPI Loop MAE memburuk** (262,71 vs 258,83 detik). Ini menunjukkan bahwa **Loop MAE bukan sekadar agregasi MAE** — metrik tersebut mengekspos *bias direksional* (over-/under-prediction yang konsisten dalam satu putaran) yang tidak terlihat pada metrik level segmen. Untuk *use case* BRT operasional, **Loop MAE harus selalu menjadi *gatekeeper* keputusan model**, bukan MAE per segmen.
+* **Trade-off**: Tidak ada *trade-off* karena Loop MAE memburuk + kompleksitas pipeline naik (2 fitur tambahan untuk fit/transform/maintain). Klasik *worse on every meaningful dimension*.
+* **Persiapan Interview**:
+  * *Pertanyaan*: *"Bagaimana cara kamu memutuskan kapan menambah fitur dan kapan tidak?"*
+  * *Jawaban*: *"Saya pakai dua gate: (1) uji korelasi awal terhadap fitur existing — kalau >0,9 langsung tolak karena redundan; (2) eksperimen end-to-end pada model dengan metrik bisnis (Loop MAE). Korelasi rendah tidak menjamin perbaikan — fitur bisa redundan secara non-linear dengan kombinasi fitur lain. `congestion_idx` adalah contoh: korelasi 0,128 dengan baseline, tapi saat dilatih, justru memperburuk Loop MAE. Saya catat hasil negatif ini di dokumen agar tidak diulang."*
+  * *Pertanyaan*: *"Pelajaran apa yang kamu ambil dari eksperimen yang gagal ini?"*
+  * *Jawaban*: *"Tiga pelajaran. Pertama, korelasi linear bisa misleading — bisa rendah tapi redundan non-linear; bisa nol tapi sangat prediktif (kasus dwell D12). Kedua, Loop MAE dan MAE per-segmen bisa diverge — model yang lebih akurat per baris tidak selalu lebih akurat per putaran. Ketiga, dokumentasi negative result sama pentingnya dengan positive result — mencegah saya dan tim mengulang eksperimen sama di masa depan."*
+* **Status**: FINAL
+
+### [D15] Eksplorasi Lanjutan Feature Extraction (PCA, QuantileTransformer, Polynomial) — Negative Result Multidimensional
+* **Konteks**: Setelah model v2 (17 fitur, Loop MAE 258,8 detik) dan D14 stabil, dilakukan eksplorasi pendekatan *feature extraction* terstruktur per kategori industri standar (sklearn transformation, deep learning, LLM-based, AutoFE) untuk mencari kemungkinan peningkatan terakhir sebelum submit.
+* **Tiga eksperimen yang dijalankan (in-brief)**:
+  1. **PCA + XGBoost** (3 variasi: n_components 10, 13, 15): Loop MAE memburuk signifikan **+52,87 hingga +57,88 detik** (~22% lebih buruk).
+  2. **QuantileTransformer untuk LSTM** (uniform & normal output): QT-normal memperbaiki LSTM dari 368,54 → 344,55 detik (-24s), tapi tetap kalah dari XGBoost 258,83 detik. QT-uniform justru memperburuk LSTM (+77s).
+  3. **Polynomial interaction features** (degree=2 pada 5 fitur teratas, 10 interaksi tambahan): Loop MAE memburuk **+2,16 detik**.
+* **Eksperimen yang DI-SKIP berbasis pertimbangan (didokumentasikan agar reviewer tahu pilihan kandidat sadar)**:
+  * **TabNet / TabTransformer**: Bisa dipakai sebagai "model lain" per brief, tapi: (i) LSTM (model sekuens kompleks) sudah diuji & kalah → arsitektur deep tabular berjenis sama kemungkinan tidak menang; (ii) brief menekankan "efisien" — model deep mengorbankan latensi & maintainability tanpa expected gain.
+  * **LLM-based (TabuLLM, prompting LLM)**: Tidak applicable — dataset tidak memiliki kolom teks bermakna (`*-DUMMY-*` semua adalah ID kategorikal numerik).
+  * **AutoFE (FeatGeNN) / RAPIDS GPU**: Outside brief (dependency tambahan), no expected gain mengingat pipeline sudah berjalan 18 detik & model sudah pada plateau performa.
+* **Keputusan**: **Pertahankan model 17 fitur, XGBoost MAE-log, StandardScaler untuk LSTM** sebagai konfigurasi final.
+* **Tiga insight engineering dari negative result**:
+  1. **PCA tidak cocok untuk tree-based**: PCA cocok untuk linear model & neural network yang sensitif ke skala/multikolinearitas. Tree-based menyukai fitur asli yang interpretable — PCA mengubah `rolling_mean_segment_5` (importance 0,50) menjadi kombinasi linear yang menyebar sinyal ke banyak komponen, sehingga tree harus *relearn* dari awal.
+  2. **QuantileTransformer membantu LSTM tapi tidak mengubah keputusan macro**: Sebuah optimasi micro yang menguntungkan model B (LSTM) tidak otomatis mengubah keputusan arsitektur ketika model A (XGBoost) tetap menang signifikan. Validasi harus dilakukan pada level keputusan akhir, bukan level sub-komponen.
+  3. **Polynomial features eksplisit redundant untuk XGBoost**: Tree splits sudah meng-capture interaksi antar-fitur **secara otomatis lewat split bersarang**. Polynomial feature eksplisit hanya menambah dimensi & noise tanpa sinyal baru. Pelajaran: tahu kapan harus *biarkan model menemukan struktur sendiri*.
+* **Persiapan Interview**:
+  * *Pertanyaan*: *"Kenapa kamu tidak coba TabNet/TabTransformer? Brief mengizinkan model lain."*
+  * *Jawaban*: *"Brief menekankan 'efisien'. Saya sudah uji LSTM — model sekuens kompleks — dan kalah dari XGBoost 110 detik di Loop MAE. TabNet & TabTransformer punya arsitektur deep yang sama mahalnya, sehingga ekspektasi performa-nya juga kemungkinan kalah. Saya pilih untuk tidak menghabiskan effort 2-3 jam tambahan untuk eksperimen dengan probabilitas keberhasilan rendah. Saya prioritaskan dokumentasi yang rapi dari yang sudah saya kerjakan, karena reviewer menilai judgment dan proses."*
+  * *Pertanyaan*: *"Bagaimana kamu membenarkan keputusan untuk tidak pakai PCA padahal datanya tabular?"*
+  * *Jawaban*: *"Saya uji empiris — PCA dengan 3 variasi (n=10, 13, 15 komponen) semua memperburuk Loop MAE 53-58 detik (~22% lebih buruk). Alasannya: tree-based model bekerja optimal dengan fitur asli interpretable. `rolling_mean_segment_5` punya importance 0,5 secara sendiri; setelah PCA, sinyalnya tersebar ke banyak komponen sehingga tree harus relearn relasinya. PCA adalah teknik standar untuk linear model & neural network, bukan untuk gradient boosting."*
+* **Status**: FINAL
